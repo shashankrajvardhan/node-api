@@ -1,7 +1,13 @@
 const http = require('http');
 const url = require('url');
+const {initDatabase, createBook, getBookById, deleteBook, getAllBooks} = require('./database');
 
-const books = new Map();
+
+initDatabase().then(() => {
+  console.log('Database initialized');
+}).catch((error) => {
+  console.error('Failed to initialized database:', error);
+});
 
 const server = http.createServer((req, res) => {
   const { pathname, query } = url.parse(req.url, true);
@@ -41,15 +47,24 @@ const server = http.createServer((req, res) => {
 
 function handleGet(res, id) {
   if (id) {
-    const book = books.get(id);
-    if (book) {
-      res.end(JSON.stringify(book));
-    } else {
-      res.statusCode = 404;
-      res.end(JSON.stringify({ error: 'Book not found' }));
-    }
+    getBookById(id).then((book) => {
+      if (!book) {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ error: 'Book not found' }));
+      } else {
+        res.end(JSON.stringify(book));
+      }
+    }).catch((error) => {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: 'Failed to fetch book', details: error.message }));
+    });
   } else {
-    res.end(JSON.stringify(Array.from(books.values())));
+    getAllBooks().then((books) => {
+      res.end(JSON.stringify(books));
+    }).catch((error) => {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: 'Failed to fetch books', details: error.message }));
+    });
   }
 }
 
@@ -58,58 +73,106 @@ function handlePost(req, res) {
   req.on('data', chunk => body += chunk.toString());
   req.on('end', () => {
     const book = JSON.parse(body);
-    const id = Date.now().toString();
-    books.set(id, { id, ...validateBook(book) });
-    res.statusCode = 201;
-    res.end(JSON.stringify({ id }));
+    const validateBook = validateBook(book);
+    createBook(validateBook).then((newBook) =>{
+      res.statusCode = 201;
+      res.end(JSON.stringify(newBook));
+    }).catch((error) =>{
+      res.statusCode = 500;
+      res.end(JSON.stringify({error: 'Failed to create book'}));
+    });
   });
 }
 
 function handlePut(req, res, id) {
-  if (!id || !books.has(id)) {
+  if (!id) {
     res.statusCode = 404;
-    return res.end(JSON.stringify({ error: 'Book not found' }));
+    res.end(JSON.stringify({ error: 'Book ID is required' }));
+    return;
   }
+
   let body = '';
   req.on('data', chunk => body += chunk.toString());
+
   req.on('end', () => {
     const book = JSON.parse(body);
-    books.set(id, { id, ...validateBook(book) });
-    res.end(JSON.stringify({ message: 'Book updated' }));
+    const validatedBook = validateBook(book);
+
+    getBookById(id).then((existingBook) => {
+      if (!existingBook) {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ error: 'Book not found' }));
+      } else {
+        // Use the id for the update
+        updateBook(id, validatedBook).then((updatedBook) => {
+          res.end(JSON.stringify({ message: 'Book updated', book: updatedBook }));
+        }).catch((error) => {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: 'Failed to update book', details: error.message }));
+        });
+      }
+    }).catch((error) => {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: 'Failed to retrieve book', details: error.message }));
+    });
   });
 }
 
 function handlePatch(req, res, id) {
-  if (!id || !books.has(id)) {
-    res.statusCode = 404;
-    return res.end(JSON.stringify({ error: 'Book not found' }));
+  if (!id) {
+    res.statusCode = 400;
+    res.end(JSON.stringify({ error: 'Book not found' }));
+    return;
   }
   let body = '';
   req.on('data', chunk => body += chunk.toString());
   req.on('end', () => {
     const updates = JSON.parse(body);
-    const book = { ...books.get(id), ...validateBook(updates) };
-    books.set(id, book);
-    res.end(JSON.stringify({ message: 'Book updated' }));
-  });
+    getBookById(id).then((exictingBook) => {
+      if (!existingBook) {
+        res.statusCode = 404;
+        res.end(JSON.stringify({error: 'Book not found'}));
+      }else{
+        const updatedBook = { ...exictingBook, ...validateBook(updates)};
+        createBook(updatedBook).then(() =>{
+          res.end(JSON.stringify({message: 'Book updated'}));
+        }).catch((error) => {
+          res.statusCode = 500;
+          res.end(JSON.stringify({error: 'Failed to update book'}));
+        });
+      }
+    }).catch((error) => {
+      res.statusCode = 500;
+      res.end(JSON.stringify({error: 'Failed to update book'}));
+    });
+    });
 }
 
 function handleDelete(res, id) {
-  if (!id || !books.has(id)) {
+  if (!id) {
     res.statusCode = 404;
-    return res.end(JSON.stringify({ error: 'Book not found' }));
+    res.end(JSON.stringify({ error: 'Book not found' }));
+    return;
   }
-  books.delete(id);
-  res.end(JSON.stringify({ message: 'Book deleted' }));
+  deleteBook(id).then((deleteBook) => {
+    if (!deleteBook) {
+      res.statusCode = 404;
+      res.end(JSON.stringify({error: 'Book not found'}));
+    }else {
+      res.end(JSON.stringify({message: 'Book deleted'}));
+    }
+  }).catch((error) => {
+    res.statusCode = 500;
+    res.end(JSON.stringify({error: 'Failed to delete book'}));
+  });
 }
-
 function handleOptions(res) {
   res.setHeader('Allow', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
   res.end();
 }
 
 function validateBook(book) {
-  const validFields = ['title', 'author', 'year', 'genre'];
+  const validFields = ['title', 'author', 'published_year', 'isbn'];
   return Object.fromEntries(
     Object.entries(book).filter(([key]) => validFields.includes(key))
   );
